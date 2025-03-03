@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.10.6",
     "pydantic-settings>=2.8.1",
+    "ruff>=0.9.9",
     "uvicorn>=0.34.0",
     "xmltodict>=0.14.2",
     "zeep>=4.3.1",
