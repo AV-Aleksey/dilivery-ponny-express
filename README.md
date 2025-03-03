@@ -1,6 +1,6 @@
 # dilivery-ponny-express
 
-uvicorn app.main:app --reload
+uvicorn internal.main:app --reload
 
 python -m venv .venv
 source .venv/bin/activate
