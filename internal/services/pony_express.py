@@ -3,32 +3,18 @@ import xmltodict
 
 from zeep import AsyncClient
 from internal.config import settings
-from zeep.exceptions import Fault
-from fastapi import HTTPException
+from pydantic import ValidationError
+from fastapi import HTTPException, status
 from datetime import datetime, timedelta, timezone
-
 from internal.schemas.orders import OrderCalcRequest, OrderCalcResponse
 
-def apiResponse(offer):
-    def calc_period(days):
-        moscow_tz = timezone(timedelta(hours=3))
-        send_date = datetime.now(moscow_tz)
-        receive_date = send_date + timedelta(days=days)
 
-        return send_date, receive_date
+def calc_period(days):
+    moscow_tz = timezone(timedelta(hours=3))
+    send_date = datetime.now(moscow_tz)
+    receive_date = send_date + timedelta(days=days)
 
-    pickup_day, delivery_day = calc_period(int(offer["MinTerm"]))
-
-    return OrderCalcResponse(
-        courier_service="PONY_EXPRESS",
-        courier_service_rating=None,
-        price=int(float(offer["Sum"])),
-        delivery_time_in_day=int(offer["MinTerm"]),
-        pickup_day=pickup_day,
-        delivery_day=delivery_day,
-        delivery_rate=offer["Description"],
-        delivery_rate_description=offer["DeliveryMethod"],
-    )
+    return send_date, receive_date
 
 
 def createBody(params: OrderCalcRequest):
@@ -73,26 +59,64 @@ def createBody(params: OrderCalcRequest):
         </Request>
     """)
 
+
 class PonyExpress:
-    async def get_calc_tariff(self, body: OrderCalcRequest):
+    async def get_calc_tariff(self, body: OrderCalcRequest) -> list[OrderCalcResponse]:
         async with AsyncClient(wsdl=settings.PONY_API_URL) as client:
             try:
                 response = await client.service.SubmitRequest(accesskey=settings.PONY_API_KEY, requestBody=createBody(body))
-
                 data = xmltodict.parse(response)
 
-                status = (
-                    data.get("Response", {}).get("OrderList", {}).get("Order", {}).get("StatusList")
-                )
+                status_list = data.get("Response", {}).get("OrderList", {}).get("Order", {}).get("StatusList")
 
-                if 'ErrorCode' in status.get("OrderStatus", {}):
-                    raise HTTPException(status_code=500, detail={"error": "SOAP Fault", "message": str(status)})
-                
+                if "ErrorCode" in status_list.get("OrderStatus", {}):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "error": "SOAP_STATUS_ERROR",
+                            "message": str(status_list),
+                        },
+                    )
                 if "OrderList" not in data.get("Response", {}):
-                    raise HTTPException(status_code=500, detail={"error": "SOAP Fault", "message": str(status)})
-                
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "error": "SOAP_RESPONSE_ERROR",
+                            "message": str(status_list),
+                        },
+                    )
+
                 offers = data["Response"]["OrderList"]["Order"]["ServiceList"]["Service"]["Calculation"]["DeliveryRateSet"]["DeliveryRate"]
 
-                return [apiResponse(item) for item in offers]
-            except Fault as err:
-                print(f"SOAP Fault: {err}")
+                result: list[OrderCalcResponse] = []
+                for offer in offers:
+                    pickup_day, delivery_day = calc_period(int(offer["MinTerm"]))
+                    result.append(
+                        OrderCalcResponse(
+                            courier_service="PONY_EXPRESS",
+                            courier_service_rating=None,
+                            price=int(float(offer["Sum"])),
+                            delivery_time_in_day=int(offer["MinTerm"]),
+                            pickup_day=pickup_day,
+                            delivery_day=delivery_day,
+                            delivery_rate=offer["Description"],
+                            delivery_rate_description=offer["DeliveryMethod"],
+                        )
+                    )
+
+                return result
+            except ValidationError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail={"error": "VALIDATION_ERROR", "message": str(e)},
+                )
+            except KeyError as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={"error": "KEY_ERROR", "message": str(e)},
+                )
+            except Exception as e:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail={"error": "UNKNOWN_ERROR", "message": str(e)},
+                )
