@@ -1,18 +1,17 @@
-import pytz
 import textwrap
 import xmltodict
 
-from zeep import Client
+from zeep import AsyncClient
 from internal.config import settings
 from zeep.exceptions import Fault
 from fastapi import HTTPException
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from internal.schemas.orders import OrderCalcRequest, OrderCalcResponse
 
 def apiResponse(offer):
     def calc_period(days):
-        moscow_tz = pytz.timezone("Europe/Moscow")
+        moscow_tz = timezone(timedelta(hours=3))
         send_date = datetime.now(moscow_tz)
         receive_date = send_date + timedelta(days=days)
 
@@ -74,52 +73,26 @@ def createBody(params: OrderCalcRequest):
         </Request>
     """)
 
-
-# Безопасно возвращает данные из удаленного источника или информацию об ошибке (api в случае ошибки возвращает 200)
-def getSafeData(data):
-    status = (
-        data.get("Response", {}).get("OrderList", {}).get("Order", {}).get("StatusList")
-    )
-
-    try:
-        if 'ErrorCode' in status.get("OrderStatus", {}):
-            raise HTTPException(
-                status_code=500, detail={"error": "SOAP Fault", "message": str(status)}
-            )
-
-        if "OrderList" not in data.get("Response", {}):
-            raise HTTPException(
-                status_code=500, detail={"error": "SOAP Fault", "message": str(status)}
-            )
-        
-        return {
-                "error": None,
-                "data": data["Response"]["OrderList"]["Order"]["ServiceList"][
-                    "Service"
-                ]["Calculation"]["DeliveryRateSet"]["DeliveryRate"],
-            }
-    except Exception as e:
-        raise HTTPException(
-            status_code=500, detail={"error": "SOAP Fault", "message": e}
-        )
-
-
 class PonyExpress:
     async def get_calc_tariff(self, body: OrderCalcRequest):
-        client = Client(wsdl=settings.PONY_API_URL)
+        async with AsyncClient(wsdl=settings.PONY_API_URL) as client:
+            try:
+                response = await client.service.SubmitRequest(accesskey=settings.PONY_API_KEY, requestBody=createBody(body))
 
-        chk_query = {
-            "accesskey": settings.PONY_API_KEY,
-            "requestBody": createBody(body),
-        }
+                data = xmltodict.parse(response)
 
-        try:
-            response = client.service.SubmitRequest(**chk_query)
+                status = (
+                    data.get("Response", {}).get("OrderList", {}).get("Order", {}).get("StatusList")
+                )
 
-            data = xmltodict.parse(response)
+                if 'ErrorCode' in status.get("OrderStatus", {}):
+                    raise HTTPException(status_code=500, detail={"error": "SOAP Fault", "message": str(status)})
+                
+                if "OrderList" not in data.get("Response", {}):
+                    raise HTTPException(status_code=500, detail={"error": "SOAP Fault", "message": str(status)})
+                
+                offers = data["Response"]["OrderList"]["Order"]["ServiceList"]["Service"]["Calculation"]["DeliveryRateSet"]["DeliveryRate"]
 
-            offers = getSafeData(data=data)
-
-            return [apiResponse(item) for item in offers["data"]]
-        except Fault as err:
-            print(f"SOAP Fault: {err}")
+                return [apiResponse(item) for item in offers]
+            except Fault as err:
+                print(f"SOAP Fault: {err}")
