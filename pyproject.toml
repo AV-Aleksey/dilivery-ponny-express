@@ -6,10 +6,21 @@ readme = "README.md"
 requires-python = ">=3.12.8"
 dependencies = [
     "fastapi>=0.115.8",
-    "httpx>=0.28.1",
+    "httpx>=0.27.2",
     "pydantic>=2.10.6",
     "pydantic-settings>=2.8.1",
+    "ruff>=0.9.9",
     "uvicorn>=0.34.0",
     "xmltodict>=0.14.2",
-    "zeep>=4.3.1",
+    "zeep[async]>=4.3.1",
 ]
+
+[tool.ruff]
+# Set the maximum line length to 79.
+line-length = 140
+
+[tool.ruff.lint]
+# Add the `line-too-long` rule to the enforced rule set. By default, Ruff omits rules that
+# overlap with the use of a formatter, like Black, but we can override this behavior by
+# explicitly adding the rule.
+extend-select = ["E501"]
